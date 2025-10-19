@@ -1,47 +1,42 @@
 from flask import Flask, request, jsonify
 import sqlite3
-from pathlib import Path
+import os
 
-DB_PATH = "licenses.db"
 app = Flask(__name__)
 
-def get_conn():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+# Ruta principal (solo para probar)
+@app.route('/')
+def home():
+    return jsonify({"status": "online", "message": "FlexFN Server is running!"})
 
-@app.route("/validate", methods=["GET", "POST"])
-@app.route("/validate/validate", methods=["GET", "POST"])  # <-- acepta ambas rutas
+# Ruta de validación de licencia
+@app.route('/validate', methods=['GET'])
 def validate():
-    # Soporte para GET y POST
-    token = None
-    if request.method == "GET":
-        token = request.args.get("token", "").strip()
-    elif request.is_json:
-        data = request.get_json(force=True)
-        token = data.get("key", "").strip() if data else ""
-
+    token = request.args.get('token')
     if not token:
-        return jsonify({"valid": False, "reason": "missing_token"}), 400
+        return jsonify({"valid": False, "error": "Token not provided"})
 
-    client_ip = request.remote_addr or request.environ.get("HTTP_X_FORWARDED_FOR", "")
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute("SELECT * FROM licenses WHERE token = ?", (token,))
-    row = c.fetchone()
+    db_path = os.path.join(os.path.dirname(__file__), "licenses.db")
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT key, expire_date FROM licenses WHERE key=?", (token,))
+    row = cursor.fetchone()
     conn.close()
 
     if not row:
-        return jsonify({"valid": False, "reason": "not_found"}), 200
-    if row["revoked"]:
-        return jsonify({"valid": False, "reason": "revoked"}), 200
+        return jsonify({"valid": False, "error": "Invalid license"})
 
-    return jsonify({
-        "valid": True,
-        "reason": "ok",
-        "expires_at": row["expires_at"],
-        "first_ip": row["first_ip"]
-    }), 200
+    # Verificar expiración
+    import datetime
+    expire_date = datetime.datetime.strptime(row[1], "%Y-%m-%d")
+    remaining_days = (expire_date - datetime.datetime.now()).days
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    if remaining_days <= 0:
+        return jsonify({"valid": False, "error": "License expired"})
+    else:
+        return jsonify({"valid": True, "days_left": remaining_days})
+
+if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
